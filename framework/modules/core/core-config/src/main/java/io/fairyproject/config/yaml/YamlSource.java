@@ -29,14 +29,19 @@ import io.fairyproject.config.ConfigurationSource;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.joining;
 
@@ -62,11 +67,30 @@ final class YamlSource implements ConfigurationSource<YamlConfiguration> {
                 yaml.dump(map), config.getComments(), props
         );
         String commentedDump = adder.getCommentedDump();
-        Files.write(configPath, commentedDump.getBytes());
+        writeAtomically(commentedDump.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Writes to a temporary file next to the config and moves it over the config, so a crash
+     * in the middle of a save leaves either the old or the new file, never a truncated one.
+     */
+    private void writeAtomically(byte[] content) throws IOException {
+        // not Files.createTempFile: it would leave the config with owner-only permissions after the move
+        Path temporary = configPath.toAbsolutePath().resolveSibling(configPath.getFileName() + "." + UUID.randomUUID() + ".tmp");
+        try {
+            Files.write(temporary, content);
+            try {
+                Files.move(temporary, configPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, configPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     private void createParentDirectories() throws IOException {
-        Path parentDir = configPath.getParent();
+        Path parentDir = configPath.toAbsolutePath().getParent();
         if (!Files.isDirectory(parentDir)) {
             Files.createDirectories(parentDir);
         }
@@ -80,7 +104,10 @@ final class YamlSource implements ConfigurationSource<YamlConfiguration> {
     }
 
     private String readConfig() throws IOException {
-        return Files.lines(configPath).collect(joining("\n"));
+        // Files.lines keeps the file open until the stream is closed
+        try (Stream<String> lines = Files.lines(configPath)) {
+            return lines.collect(joining("\n"));
+        }
     }
 
     private static final class CommentAdder {
