@@ -392,7 +392,9 @@ public abstract class BaseCommand implements ICommand {
                 }
             }
         }
-        if (this.noArgCommand != null) {
+        // only fall back to the no-arg command when it can take these arguments, otherwise a typo
+        // in a sub command name would silently run it
+        if (this.noArgCommand != null && args.length <= this.noArgCommand.getMaxParameterCount()) {
             return new PossibleSearches(Collections.singleton(this.noArgCommand), args, "");
         }
         return null;
